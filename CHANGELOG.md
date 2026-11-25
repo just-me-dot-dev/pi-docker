@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.0
+
+- turn off pi's install report and provider attribution headers by default
+- document the requests pi makes on its own in a privacy section
+- skip --env variables that are not set on the host, so they cannot remove
+  image defaults
+
 ## v0.1.1
 
 - stop dependabot from proposing non-LTS Node.js major versions

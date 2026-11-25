@@ -40,6 +40,11 @@ it if you suspect misuse.
 
 **Variables passed with `--env`.** Anything you pass in, the agent can read.
 
+**Sharing commands.** `/share` uploads the whole session and `/bug` uploads a
+report. Sessions can contain file contents and secrets that appeared in the
+conversation. Review them before you share. See the privacy section of the
+README for the requests pi makes on its own.
+
 **Paths shared with `--mount-ro`.** They are read-only, but the agent can read
 and upload them.
 

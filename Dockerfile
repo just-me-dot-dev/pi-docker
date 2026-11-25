@@ -55,6 +55,7 @@ RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} +
 ENV HOME=/home/pi \
 	LANG=C.UTF-8 \
 	PI_SKIP_VERSION_CHECK=1 \
+	PI_TELEMETRY=0 \
 	PI_SELF_UPDATE_COMMAND="echo pi-docker: rebuild the image with pi-docker --build to update pi" \
 	PI_CLIPBOARD_OSC52=1 \
 	NO_UPDATE_NOTIFIER=1 \
