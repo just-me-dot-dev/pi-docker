@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.1
+
+- stop dependabot from proposing non-LTS Node.js major versions
+
 ## v0.1.0
 
 - add a hardened Dockerfile that installs pi as an unprivileged user
