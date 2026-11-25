@@ -164,8 +164,15 @@ while (-not $done -and $i -lt $args.Count) {
 		'--env' {
 			if ($i + 1 -ge $args.Count) { Write-Failure '--env needs a variable name' }
 			$i++
-			$ExtraArgs.Add('--env')
-			$ExtraArgs.Add([string]$args[$i])
+			$name = [string]$args[$i]
+			# An unset variable would remove the image default, so skip it
+			if (Test-Path "env:$name") {
+				$ExtraArgs.Add('--env')
+				$ExtraArgs.Add($name)
+			}
+			else {
+				[Console]::Error.WriteLine("pi-docker: $name is not set on the host, not passing it")
+			}
 		}
 		'--help' { Show-Usage; exit 0 }
 		'--' { $i++; $done = $true; continue }

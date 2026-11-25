@@ -15,6 +15,7 @@ work on the project you started it in, and nothing else on your machine.
 - `.git/hooks` and `.git/config` are **read-only**, so the agent cannot plant
   code that git later runs on your host
 - your host pi config (`~/.pi`) is **never mounted**
+- pi's **install report and version check are off** (see [Privacy](#privacy))
 - works on **macOS, Linux and Windows** with **Docker or Podman**
 
 Read [docs/threat-model.md](docs/threat-model.md) for what this protects and,
@@ -114,7 +115,7 @@ pi-docker -- --help              # pi's help; "--" ends the wrapper options
 | `--login` | Publish the OAuth callback ports for this run (see below) |
 | `--shell` | Start `bash` in the container instead of pi |
 | `--mount-ro PATH` | Also mount `PATH` read-only at the same path (repeatable) |
-| `--env NAME` | Pass the host variable `NAME` into the container (repeatable) |
+| `--env NAME` | Pass the host variable `NAME` into the container (repeatable); skipped with a warning when it is not set |
 | `--unsafe-git` | Do not protect `.git/hooks` and `.git/config` |
 | `--help` | Show the wrapper help |
 
@@ -173,6 +174,43 @@ pi-docker --mount-ro ~/.agents/skills
 
 Do not point `PI_DOCKER_HOME` at your host `~/.pi`. The agent could then
 write extensions or instructions that your host pi runs without a sandbox.
+
+## Privacy
+
+pi sends no prompts, code or sessions anywhere except to your model
+provider, unless you share them yourself. It does make a few small requests on
+its own. The image turns off the ones that are not needed:
+
+| Request | Sends | Image default | Switch |
+|---|---|---|---|
+| Install report to `pi.dev` | pi version, OS, Node version, CPU architecture; once per pi version | **off** | `PI_TELEMETRY` |
+| Attribution headers to OpenRouter, NVIDIA NIM and OpenCode | that the request comes from pi | **off** | `PI_TELEMETRY` |
+| Version check at `pi.dev` | pi version, OS, Node version, CPU architecture | **off** | `PI_SKIP_VERSION_CHECK` |
+| Model catalog refresh | nothing beyond the request itself | on | `PI_OFFLINE` |
+| Analytics | experimental first-run setup only | off (opt-in) | `enableAnalytics` setting |
+
+To turn the install report and attribution back on:
+
+```sh
+PI_TELEMETRY=1 pi-docker --env PI_TELEMETRY
+```
+
+To stop all automatic network activity, including model catalog refreshes
+and update checks of pi packages, run with `PI_OFFLINE=1 pi-docker --env
+PI_OFFLINE`. Model requests and logins still work.
+
+Other things to know:
+
+- Every model request carries a User-Agent such as
+  `pi/1.6.1 (linux; node/v24.22.3; arm64)`.
+- pi stores a random `deviceId` in `~/.pi-docker/agent/settings.json`. It is
+  only sent when you log in to OpenAI, as its agent host ID.
+- `/share` uploads the whole session (to your Radius organization or as a
+  private GitHub gist) and `/bug` uploads a report. Both only run when you
+  call them. `/debug` writes `pi-debug.log` locally; it contains prompts and
+  file contents.
+- pi packages from npm or git are fetched from their registry and checked
+  for updates on every start.
 
 ## Building
 

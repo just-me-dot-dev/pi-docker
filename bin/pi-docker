@@ -181,7 +181,15 @@ while [ $# -gt 0 ]; do
 		;;
 	--env)
 		[ $# -ge 2 ] || die "--env needs a variable name"
-		EXTRA_ARGS+=(--env "$2")
+		case "$2" in
+		"" | [0-9]* | *[!A-Za-z0-9_]*) die "invalid variable name: $2" ;;
+		esac
+		# An unset variable would remove the image default, so skip it
+		if [ -n "${!2+set}" ]; then
+			EXTRA_ARGS+=(--env "$2")
+		else
+			printf 'pi-docker: %s is not set on the host, not passing it\n' "$2" >&2
+		fi
 		shift
 		;;
 	--help)

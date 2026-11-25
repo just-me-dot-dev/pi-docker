@@ -38,6 +38,10 @@ in_container 'grep NoNewPrivs /proc/self/status' | grep -q '1' || fail "no-new-p
 in_container 'touch /usr/x' | grep -q 'Read-only' || fail "root filesystem writable"
 in_container 'touch .git/hooks/x' | grep -q 'Read-only' || fail ".git/hooks writable"
 
+# Check the privacy defaults
+# shellcheck disable=SC2016 # Expands in the container
+in_container 'echo "$PI_TELEMETRY"' | grep -qx '0' || fail "telemetry not disabled"
+
 # Check that the workspace and the state directory are writable
 in_container 'touch created && touch ~/.pi/agent/created' >/dev/null
 [ -f "$WORK/project/created" ] || fail "workspace not writable"
