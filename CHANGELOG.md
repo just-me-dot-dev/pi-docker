@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.2
+
+- link the blog post about pi-docker from the README
+
 ## v0.2.1
 
 - restructure the README with features, installation, configuration,
