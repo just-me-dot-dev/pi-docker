@@ -1,0 +1,297 @@
+#!/usr/bin/env bash
+#
+# pi-docker: run the pi coding agent in a hardened container.
+#
+# Works on macOS, Linux, WSL and Git Bash with Docker or Podman. Compatible
+# with bash 3.2 (the macOS system bash). See README.md for usage and
+# docs/threat-model.md for what the container does and does not protect.
+
+set -euo pipefail
+
+# Settings, overridable from the environment
+IMAGE="${PI_DOCKER_IMAGE:-pi-docker:latest}"
+STATE_DIR="${PI_DOCKER_HOME:-$HOME/.pi-docker}"
+MEMORY="${PI_DOCKER_MEMORY:-4g}"
+PIDS="${PI_DOCKER_PIDS:-1024}"
+CPUS="${PI_DOCKER_CPUS:-}"
+
+# Fixed values of the image
+CONTAINER_HOME="/home/pi"
+IMAGE_UID="1000"
+IMAGE_GID="1000"
+
+# OAuth callback ports of pi's providers (OpenAI 1455, Radius 1456,
+# Anthropic 53692). Providers with a random port fall back to pasting the URL.
+OAUTH_PORTS="1455 1456 53692"
+
+usage() {
+	cat <<'EOF'
+Usage: pi-docker [wrapper options] [--] [pi arguments]
+
+Runs pi in a hardened container with the current directory mounted.
+Wrapper options must come first. Everything after them, or after "--",
+is passed to pi unchanged.
+
+Wrapper options:
+  --build [args]     Build the image, passing [args] to "docker build"
+  --login            Publish the OAuth callback ports for this run
+  --shell            Start bash in the container instead of pi
+  --mount-ro PATH    Mount PATH read-only at the same path (repeatable)
+  --env NAME         Pass the host variable NAME into the container (repeatable)
+  --unsafe-git       Do not mount .git/hooks and .git/config read-only
+  --help             Show this help
+
+Environment:
+  PI_DOCKER_IMAGE    Image tag (default: pi-docker:latest)
+  PI_DOCKER_HOME     Host directory mounted as ~/.pi (default: ~/.pi-docker)
+  PI_DOCKER_ENGINE   docker or podman (default: auto-detect)
+  PI_DOCKER_USER     Value for --user, overrides the auto-detection
+  PI_DOCKER_MEMORY   Memory limit (default: 4g)
+  PI_DOCKER_PIDS     Process limit (default: 1024)
+  PI_DOCKER_CPUS     CPU limit (default: none)
+
+Examples:
+  pi-docker --build
+  pi-docker --login -- auth login anthropic
+  pi-docker -c
+  pi-docker -- --help
+EOF
+}
+
+die() {
+	# Print an error message and exit
+	printf 'pi-docker: %s\n' "$*" >&2
+	exit 1
+}
+
+detect_engine() {
+	# Pick docker or podman, honouring PI_DOCKER_ENGINE
+	if [ -n "${PI_DOCKER_ENGINE:-}" ]; then
+		printf '%s' "$PI_DOCKER_ENGINE"
+	elif command -v docker >/dev/null 2>&1; then
+		printf 'docker'
+	elif command -v podman >/dev/null 2>&1; then
+		printf 'podman'
+	else
+		die "neither docker nor podman found in PATH"
+	fi
+}
+
+is_podman() {
+	# Succeed when the engine is Podman, also when it hides behind "docker"
+	"$ENGINE" --version 2>/dev/null | grep -qi podman
+}
+
+is_windows_shell() {
+	# Succeed under Git Bash, MSYS2 or Cygwin
+	case "$(uname -s)" in
+	MINGW* | MSYS* | CYGWIN*) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+repo_dir() {
+	# Print the repository root, following symlinks to this script
+	local src="${BASH_SOURCE[0]}" dir
+	while [ -L "$src" ]; do
+		dir="$(cd -P "$(dirname "$src")" && pwd)"
+		src="$(readlink "$src")"
+		case "$src" in /*) ;; *) src="$dir/$src" ;; esac
+	done
+	cd -P "$(dirname "$src")/.." && pwd
+}
+
+host_path() {
+	# Print the path the engine understands for a host path
+	if is_windows_shell; then
+		cygpath -m "$1"
+	else
+		printf '%s' "$1"
+	fi
+}
+
+container_path() {
+	# Print the container path for an absolute host path (C:/x -> /c/x)
+	local path
+	path="$(host_path "$1")"
+	case "$path" in
+	[A-Za-z]:*)
+		local drive rest
+		drive="$(printf '%s' "${path%%:*}" | tr '[:upper:]' '[:lower:]')"
+		rest="${path#*:}"
+		printf '/%s%s' "$drive" "${rest%/}"
+		;;
+	*) printf '%s' "$path" ;;
+	esac
+}
+
+check_workspace() {
+	# Refuse working directories that would expose too much or clash
+	local cwd="$1" home
+	home="$(cd "$HOME" && pwd -P)"
+	[ "$cwd" != "/" ] || die "refusing to mount /; cd into a project first"
+	[ "$cwd" != "$home" ] || die "refusing to mount your home directory; cd into a project first"
+	case "$(container_path "$cwd")" in
+	/bin | /bin/* | /dev | /dev/* | /etc | /etc/* | /lib | /lib/* | /proc | /proc/* | \
+		/sbin | /sbin/* | /sys | /sys/* | /usr | /usr/* | "$CONTAINER_HOME" | "$CONTAINER_HOME"/.pi*)
+		die "the working directory clashes with a container path: $cwd"
+		;;
+	esac
+}
+
+build_image() {
+	# Build the image from the repository Dockerfile
+	local dir
+	dir="$(repo_dir)"
+	[ -f "$dir/Dockerfile" ] || die "Dockerfile not found in $dir"
+	exec "$ENGINE" build --tag "$IMAGE" "$@" "$(host_path "$dir")"
+}
+
+bind_mount() {
+	# Print a --mount value from a host path and a container path; a third
+	# argument makes the mount read-only
+	local src dst
+	src="$(host_path "$1")"
+	dst="$2"
+	case "$src$dst" in *,*) die "paths with commas cannot be mounted: $1" ;; esac
+	printf 'type=bind,src=%s,dst=%s%s' "$src" "$dst" "${3:+,readonly}"
+}
+
+# Parse wrapper options
+ENGINE="$(detect_engine)"
+LOGIN=0
+SHELL_MODE=0
+UNSAFE_GIT=0
+EXTRA_ARGS=()
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--build)
+		shift
+		build_image "$@"
+		;;
+	--login) LOGIN=1 ;;
+	--shell) SHELL_MODE=1 ;;
+	--unsafe-git) UNSAFE_GIT=1 ;;
+	--mount-ro)
+		[ $# -ge 2 ] || die "--mount-ro needs a path"
+		[ -e "$2" ] || die "no such path: $2"
+		path="$(cd "$(dirname "$2")" && pwd -P)/$(basename "$2")"
+		EXTRA_ARGS+=(--mount "$(bind_mount "$path" "$(container_path "$path")" ro)")
+		shift
+		;;
+	--env)
+		[ $# -ge 2 ] || die "--env needs a variable name"
+		EXTRA_ARGS+=(--env "$2")
+		shift
+		;;
+	--help)
+		usage
+		exit 0
+		;;
+	--)
+		shift
+		break
+		;;
+	*) break ;;
+	esac
+	shift
+done
+
+# Check the image and the working directory
+"$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1 ||
+	die "image $IMAGE not found; build it with: pi-docker --build"
+CWD="$(pwd -P)"
+check_workspace "$CWD"
+WORKDIR="$(container_path "$CWD")"
+
+# Prepare the persistent pi state directory (login, settings, sessions)
+mkdir -p "$STATE_DIR/agent"
+chmod 700 "$STATE_DIR"
+STATE_DIR="$(cd "$STATE_DIR" && pwd -P)"
+
+# Choose the user. Podman maps the host user with keep-id. Docker on Linux
+# and macOS runs as the host UID so files in the workspace keep their owner.
+# Docker Desktop on Windows uses the image user.
+USER_ARGS=()
+TMPFS_UID="$IMAGE_UID"
+TMPFS_GID="$IMAGE_GID"
+if [ -n "${PI_DOCKER_USER:-}" ]; then
+	USER_ARGS=(--user "$PI_DOCKER_USER")
+	TMPFS_UID="${PI_DOCKER_USER%%:*}"
+	case "$PI_DOCKER_USER" in *:*) TMPFS_GID="${PI_DOCKER_USER#*:}" ;; esac
+elif is_podman; then
+	USER_ARGS=(--userns=keep-id)
+	TMPFS_UID="$(id -u)"
+	TMPFS_GID="$(id -g)"
+elif ! is_windows_shell; then
+	TMPFS_UID="$(id -u)"
+	TMPFS_GID="$(id -g)"
+	USER_ARGS=(--user "$TMPFS_UID:$TMPFS_GID")
+fi
+
+# Protect git metadata that would run code on the host later
+if [ "$UNSAFE_GIT" -eq 0 ] && [ -d "$CWD/.git" ]; then
+	mkdir -p "$CWD/.git/hooks"
+	EXTRA_ARGS+=(--mount "$(bind_mount "$CWD/.git/hooks" "$WORKDIR/.git/hooks" ro)")
+	if [ -f "$CWD/.git/config" ]; then
+		EXTRA_ARGS+=(--mount "$(bind_mount "$CWD/.git/config" "$WORKDIR/.git/config" ro)")
+	fi
+fi
+
+# Pass the host git identity, so commits are attributed correctly
+if command -v git >/dev/null 2>&1; then
+	GIT_NAME="$(git config --get user.name 2>/dev/null || true)"
+	GIT_MAIL="$(git config --get user.email 2>/dev/null || true)"
+	if [ -n "$GIT_NAME" ]; then
+		export GIT_AUTHOR_NAME="$GIT_NAME" GIT_COMMITTER_NAME="$GIT_NAME"
+		EXTRA_ARGS+=(--env GIT_AUTHOR_NAME --env GIT_COMMITTER_NAME)
+	fi
+	if [ -n "$GIT_MAIL" ]; then
+		export GIT_AUTHOR_EMAIL="$GIT_MAIL" GIT_COMMITTER_EMAIL="$GIT_MAIL"
+		EXTRA_ARGS+=(--env GIT_AUTHOR_EMAIL --env GIT_COMMITTER_EMAIL)
+	fi
+fi
+
+# Publish the OAuth callback ports on the host loopback only
+if [ "$LOGIN" -eq 1 ]; then
+	for port in $OAUTH_PORTS; do
+		EXTRA_ARGS+=(--publish "127.0.0.1:$port:$port")
+	done
+	EXTRA_ARGS+=(--env PI_OAUTH_CALLBACK_HOST=0.0.0.0)
+fi
+
+# Optional limits and interactive mode
+[ -z "$CPUS" ] || EXTRA_ARGS+=(--cpus "$CPUS")
+if [ -t 0 ] && [ -t 1 ]; then
+	EXTRA_ARGS+=(--interactive --tty)
+else
+	EXTRA_ARGS+=(--interactive)
+fi
+[ "$SHELL_MODE" -eq 0 ] || EXTRA_ARGS+=(--entrypoint bash)
+
+# Git Bash would rewrite the container paths into Windows paths
+if is_windows_shell; then
+	export MSYS_NO_PATHCONV=1
+fi
+
+# Run the container
+exec "$ENGINE" run --rm \
+	--init \
+	--hostname pi-docker \
+	--cap-drop ALL \
+	--security-opt no-new-privileges \
+	--read-only \
+	--memory "$MEMORY" \
+	--pids-limit "$PIDS" \
+	--tmpfs "/tmp:rw,exec,nosuid,nodev,size=1g" \
+	--tmpfs "$CONTAINER_HOME:rw,exec,nosuid,nodev,size=2g,mode=0700,uid=$TMPFS_UID,gid=$TMPFS_GID" \
+	--mount "$(bind_mount "$STATE_DIR" "$CONTAINER_HOME/.pi")" \
+	--mount "$(bind_mount "$CWD" "$WORKDIR")" \
+	--workdir "$WORKDIR" \
+	--env TERM \
+	--env COLORTERM \
+	--env TERM_PROGRAM \
+	--env TERM_PROGRAM_VERSION \
+	${USER_ARGS[@]+"${USER_ARGS[@]}"} \
+	"${EXTRA_ARGS[@]}" \
+	"$IMAGE" "$@"
