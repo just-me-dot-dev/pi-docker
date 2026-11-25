@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.1
+
+- restructure the README with features, installation, configuration,
+  troubleshooting and platform sections
+
 ## v0.2.0
 
 - turn off pi's install report and provider attribution headers by default
