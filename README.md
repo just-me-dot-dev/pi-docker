@@ -22,6 +22,11 @@ cd ~/code/my-project
 pi-docker            # exactly like pi, but contained
 ```
 
+> [!TIP]
+> Read the story behind it on the blog:
+> **[pi-docker: I put pi in a box](https://just-me.dev/blog/pi-docker.html)**.
+> It covers why a coding agent needs a box and how each control works.
+
 ## Contents
 
 - [Features](#features)
@@ -341,8 +346,11 @@ started it in. It does **not** make the agent trustworthy. In particular:
   your pi credentials.
 
 Read the full [threat model](docs/threat-model.md) before relying on
-`pi-docker`. As extra safeguards, the wrapper refuses to start in `/` or in
-your home directory, and never publishes ports except during `--login`.
+`pi-docker`. The [blog post](https://just-me.dev/blog/pi-docker.html) walks
+through the controls and the reasoning behind them.
+
+As extra safeguards, the wrapper refuses to start in `/` or in your home
+directory, and never publishes ports except during `--login`.
 
 ## Platform support
 
