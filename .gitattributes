@@ -1,0 +1,6 @@
+# Unix line endings everywhere, so the scripts and the Dockerfile also work
+# from a Windows checkout
+* text=auto eol=lf
+
+# Windows-only script
+*.ps1 text eol=crlf
